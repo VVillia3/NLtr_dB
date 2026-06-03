@@ -1,0 +1,64 @@
+name: Build Windows executable
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+          cache-dependency-path: requirements-windows.txt
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-windows.txt
+
+      - name: Verify required project files
+        shell: pwsh
+        run: |
+          $required = @(
+            'Newsletter_Recipients.py',
+            'Newsletter_logo.png',
+            'Newsletter_Recipients_User_Manual.pdf'
+          )
+
+          foreach ($file in $required) {
+            if (-not (Test-Path $file)) {
+              throw "Required project file is missing: $file"
+            }
+          }
+
+      - name: Check Python syntax
+        shell: pwsh
+        run: python -m py_compile Newsletter_Recipients.py
+
+      - name: Build Windows executable
+        shell: pwsh
+        run: |
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --windowed `
+            --name NewsletterRecipientsDB `
+            --add-data "Newsletter_logo.png:." `
+            --add-data "Newsletter_Recipients_User_Manual.pdf:." `
+            Newsletter_Recipients.py
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: NewsletterRecipientsDB-Windows
+          path: dist/NewsletterRecipientsDB.exe
+          if-no-files-found: error

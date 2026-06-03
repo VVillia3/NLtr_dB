@@ -1,5 +1,5 @@
 #   Added in version (1.0.4):
-#		A new Notes field is:
+#       A new Notes field is:
 #           Added to the SQLite database schema.
 #           Automatically added to an existing database the next time the application
 #           launches. No manual database conversion is needed.
@@ -198,7 +198,7 @@ def combine_selected_duplicates():
     selected_items = search_results_box.selection()
 
     if len(selected_items) != 2:
-        messagebox.showerror(
+        show_error(
             "Select Two Records",
             "Select exactly two records in the Search Results table before combining duplicates."
         )
@@ -210,7 +210,7 @@ def combine_selected_duplicates():
         values = search_results_box.item(item, "values")
 
         if not values or not str(values[0]).isdigit():
-            messagebox.showerror(
+            show_error(
                 "Invalid Selection",
                 "One selected search result does not contain a valid record ID."
             )
@@ -222,21 +222,17 @@ def combine_selected_duplicates():
     record2 = get_record_dict_by_id(selected_ids[1])
 
     if not record1 or not record2:
-        messagebox.showerror(
+        show_error(
             "Record Not Found",
             "One or both selected records could not be found in the database."
         )
         return
 
     dialog = tk.Toplevel(root)
+    dialog.withdraw()
     dialog.title("Combine Duplicate Records")
     dialog.configure(bg=DUPLICATE_DIALOG_BG)
-
     dialog.transient(root)
-    dialog.wait_visibility()
-    dialog.lift()
-    dialog.focus_force()
-    dialog.grab_set()
 
     result = {
         "saved": False
@@ -345,9 +341,32 @@ def combine_selected_duplicates():
     )
         
     combined_vars = {}
+    combined_widgets = {}
     source_buttons = {}
 
     SOURCE_BUTTON_BG = "#153315"
+
+    def get_combined_value(field_name):
+        if field_name == "notes":
+            return combined_widgets[field_name].get("1.0", "end-1c")
+
+        return combined_vars[field_name].get()
+
+    def set_combined_value(field_name, value):
+        if field_name == "notes":
+            widget = combined_widgets[field_name]
+            widget.delete("1.0", tk.END)
+            widget.insert("1.0", value)
+            widget.edit_modified(False)
+            update_source_button_highlights()
+            return
+
+        combined_vars[field_name].set(value)
+
+    def on_notes_modified(event):
+        if event.widget.edit_modified():
+            update_source_button_highlights()
+            event.widget.edit_modified(False)
 
     for index, (field_name, label_text) in enumerate(field_labels, start=3):
         value1 = "" if record1.get(field_name) is None else str(record1.get(field_name))
@@ -365,9 +384,6 @@ def combine_selected_duplicates():
             display_value2 = format_phone(value2)
 
         default_value = value1 if value1 else value2
-
-        var = tk.StringVar(value=default_value)
-        combined_vars[field_name] = var
 
         field_name_color = "#FC0000" if value1.strip() != value2.strip() else FG_COLOR
 
@@ -398,12 +414,41 @@ def combine_selected_duplicates():
             wraplength=220
         ).grid(row=index, column=2, sticky="w", padx=10, pady=2)
 
-        entry = tk.Entry(
-            dialog,
-            textvariable=var,
-            width=32
-        )
-        entry.grid(row=index, column=4, sticky="w", padx=10, pady=2)
+        if field_name == "notes":
+            notes_frame = tk.Frame(dialog)
+            notes_frame.grid(row=index, column=4, sticky="w", padx=10, pady=2)
+
+            notes_scrollbar = tk.Scrollbar(
+                notes_frame,
+                orient="vertical"
+            )
+            notes_scrollbar.pack(side="right", fill="y")
+
+            notes_widget = tk.Text(
+                notes_frame,
+                width=32,
+                height=4,
+                wrap="word",
+                yscrollcommand=notes_scrollbar.set
+            )
+            notes_widget.pack(side="left", fill="both", expand=True)
+            notes_scrollbar.config(command=notes_widget.yview)
+
+            notes_widget.insert("1.0", default_value)
+            notes_widget.edit_modified(False)
+            notes_widget.bind("<<Modified>>", on_notes_modified)
+
+            combined_widgets[field_name] = notes_widget
+        else:
+            var = tk.StringVar(value=default_value)
+            combined_vars[field_name] = var
+
+            entry = tk.Entry(
+                dialog,
+                textvariable=var,
+                width=32
+            )
+            entry.grid(row=index, column=4, sticky="w", padx=10, pady=2)
                 
         button_frame = tk.Frame(
             dialog,
@@ -425,7 +470,7 @@ def combine_selected_duplicates():
             fg="aqua",
             activebackground=EXPORT_ACTIVE_BG,
             activeforeground=EXPORT_FG,
-            command=lambda f=field_name, v=value1: combined_vars[f].set(v)
+            command=lambda f=field_name, v=value1: set_combined_value(f, v)
         )
         r1_button.grid(row=0, column=0, padx=(0, 4))
 
@@ -437,7 +482,7 @@ def combine_selected_duplicates():
             fg="lime",
             activebackground=SHOW_ALL_RECORDS_ACTIVE_BG,
             activeforeground=SHOW_ALL_RECORDS_FG,
-            command=lambda f=field_name, v=value2: combined_vars[f].set(v)
+            command=lambda f=field_name, v=value2: set_combined_value(f, v)
         )
         r2_button.grid(row=0, column=1)
 
@@ -450,7 +495,7 @@ def combine_selected_duplicates():
 
     def update_source_button_highlights(*args):
         for field_name, button_data in source_buttons.items():
-            current_value = combined_vars[field_name].get()
+            current_value = get_combined_value(field_name)
 
             r1_button = button_data["r1_button"]
             r2_button = button_data["r2_button"]
@@ -488,7 +533,7 @@ def combine_selected_duplicates():
 
     def save_combined_record():
         combined_record = {
-            field_name: combined_vars[field_name].get().strip()
+            field_name: get_combined_value(field_name).strip()
             for field_name, label_text in field_labels
         }
 
@@ -496,21 +541,21 @@ def combine_selected_duplicates():
         combined_record["mail_list"] = csv_int(combined_record["mail_list"])
 
         if not combined_record["first_name"] or not combined_record["last_name"]:
-            messagebox.showerror(
+            show_error(
                 "Missing Information",
                 "The combined record must include First Name and Last Name."
             )
             return
 
         if not combined_record["email_list"] and not combined_record["mail_list"]:
-            messagebox.showerror(
+            show_error(
                 "List Selection Required",
                 "The combined record must be assigned to Email List, Mail List, or both."
             )
             return
 
         if combined_record["email_list"] and not combined_record["email"]:
-            messagebox.showerror(
+            show_error(
                 "Missing Email",
                 "An email address is required if Email List is selected."
             )
@@ -522,13 +567,13 @@ def combine_selected_duplicates():
             or not combined_record["state"]
             or not combined_record["zip_code"]
         ):
-            messagebox.showerror(
+            show_error(
                 "Missing Mailing Address",
                 "Address 1, City, State, and ZIP Code are required if Mail List is selected."
             )
             return
 
-        confirm = messagebox.askyesno(
+        confirm = ask_yes_no(
             "Confirm Combine Duplicates",
             f"This will delete original record IDs {record1['id']} and {record2['id']} "
             f"and save one new combined record with a new unique ID.\n\n"
@@ -581,7 +626,7 @@ def combine_selected_duplicates():
         show_all_records_inline()
         clear_form()
 
-        messagebox.showinfo(
+        show_info(
             "Duplicates Combined",
             f"Original record IDs {record1['id']} and {record2['id']} were deleted.\n\n"
             f"New combined record ID: {new_id}"
@@ -624,6 +669,8 @@ def combine_selected_duplicates():
         pady=(5, 10)
     )
     
+    center_toplevel_over_parent(dialog, root)
+    dialog.grab_set()
     dialog.wait_window()
     
 
@@ -814,7 +861,7 @@ def open_user_manual():
     )
 
     if not os.path.exists(manual_path):
-        messagebox.showerror(
+        show_error(
             "User Manual Not Found",
             "The bundled user manual could not be located."
         )
@@ -905,56 +952,56 @@ def get_form_data_or_error():
     notes = notes_text.get("1.0", tk.END).strip()
 
     if not first or not last:
-        messagebox.showerror(
+        show_error(
             "Error",
             "Missing Information.\n\nFirst and last name are required."
         )
         return None
 
     if not listemail and not listmail:
-        messagebox.showerror(
+        show_error(
             "Error",
             "List selection required.\n\nSelect Email List or Mail List."
         )
         return None
 
     if areacode and (not areacode.isdigit() or len(areacode) != 3):
-        messagebox.showerror(
+        show_error(
             "Error",
             "Invalid area code.\n\nEnter 3 digits, with or without parentheses."
         )
         return None
 
     if phone and (not phone.isdigit() or len(phone) != 7):
-        messagebox.showerror(
+        show_error(
             "Error",
             "Invalid phone number.\n\nEnter 7 digits only, with or without a dash."
         )
         return None
 
     if listemail and not email:
-        messagebox.showerror(
+        show_error(
             "Error",
             "Missing email address.\n\nAn email address is required if Email List is selected."
         )
         return None
 
     if email and ("@" not in email or "." not in email.split("@")[-1]):
-        messagebox.showerror(
+        show_error(
             "Error",
             "Invalid Email.\n\nPlease enter a complete email address."
         )
         return None
 
     if listmail and (not address1 or not city or not state or not zip_code):
-        messagebox.showerror(
+        show_error(
             "Error",
             "Missing complete mailing address.\n\nIf Mail List is selected, confirm all entries are completed."
         )
         return None
 
     if zip_code and (not zip_code.isdigit() or len(zip_code) != 5):
-        messagebox.showerror(
+        show_error(
             "Error",
             "Invalid ZIP code.\n\nZIP code must contain 5 digits."
         )
@@ -1090,7 +1137,7 @@ def save_recipient():
         if duplicate:
             existing_id, ex_first, ex_last, ex_address, ex_email, ex_phone = duplicate
 
-            proceed = messagebox.askyesno(
+            proceed = ask_yes_no(
                 "Possible Duplicate",
                 f"Possible duplicate found:\n\n"
                 f"Existing ID: {existing_id}\n"
@@ -1148,7 +1195,10 @@ def save_recipient():
 
     honorific_title_entry.focus_set()
 
-    messagebox.showinfo("Saved", "Recipient saved.")
+    show_info(
+        "Saved",
+        "Recipient saved."
+    )
 
 def clear_form():
     honorific_title_entry.delete(0, tk.END)
@@ -1185,6 +1235,7 @@ def clear_form():
 
 def export_xlsx(query, default_filename):
     file_path = filedialog.asksaveasfilename(
+        parent=root,
         defaultextension=".xlsx",
         initialfile=default_filename,
         filetypes=[("Excel files", "*.xlsx")]
@@ -1222,13 +1273,14 @@ def export_xlsx(query, default_filename):
 
     open_file(file_path)
 
-    messagebox.showinfo(
+    show_info(
         "Export Complete",
         f"Excel file saved:\n\n{file_path}"
     )
 
 def export_csv_all():
     file_path = filedialog.asksaveasfilename(
+        parent=root,
         defaultextension=".csv",
         initialfile=f"{DB_NAME}_{datetime.now().strftime('%Y-%m-%d')}.csv",
         filetypes=[("CSV files", "*.csv")]
@@ -1271,7 +1323,7 @@ def export_csv_all():
 
     open_file(file_path)
 
-    messagebox.showinfo(
+    show_info(
         "Export Complete",
         f"CSV file saved:\n\n{file_path}"
     )
@@ -1318,15 +1370,11 @@ def csv_int(value):
 
 def choose_csv_fields_for_update(existing_record, csv_record):
     dialog = tk.Toplevel(root)
+    dialog.withdraw()
     dialog.title("Review Possible CSV Duplicate")
     dialog.configure(bg=DUPLICATE_DIALOG_BG)
     dialog.resizable(False, False)
     dialog.transient(root)
-    dialog.wait_visibility()
-    dialog.lift()
-    dialog.focus_force()
-
-    dialog.grab_set()
 
     result = {
         "action": None,
@@ -1504,7 +1552,7 @@ def choose_csv_fields_for_update(existing_record, csv_record):
         ]
 
         if not selected:
-            messagebox.showerror(
+            show_error(
                 "No Fields Selected",
                 "Select at least one CSV field to update, or choose Skip."
             )
@@ -1613,8 +1661,10 @@ def choose_csv_fields_for_update(existing_record, csv_record):
         sticky="ew"
     )
     
+    center_toplevel_over_parent(dialog, root)
+    dialog.grab_set()
     dialog.wait_window()
-
+    
     return result
 
 def format_record_for_report(record):
@@ -1659,6 +1709,7 @@ def write_csv_update_exceptions_report(
     default_filename = f"CSV Update Exceptions {report_timestamp}.txt"
 
     report_path = filedialog.asksaveasfilename(
+        parent=root,
         defaultextension=".txt",
         initialfile=default_filename,
         filetypes=[("Text files", "*.txt")]
@@ -1744,6 +1795,7 @@ def write_csv_update_exceptions_report(
 
 def import_new_records_from_csv():
     file_path = filedialog.askopenfilename(
+        parent=root,
         filetypes=[("CSV files", "*.csv")]
     )
 
@@ -1916,7 +1968,7 @@ def import_new_records_from_csv():
 
                     if decision["action"] == "replace":
                         if not csv_record["email_list"] and not csv_record["mail_list"]:
-                            messagebox.showerror(
+                            show_error(
                                 "Invalid Replace",
                                 "Replacing with this CSV record would leave the record on no list.\n\n"
                                 "The replacement was skipped."
@@ -1980,7 +2032,7 @@ def import_new_records_from_csv():
                             not updated_record["email_list"]
                             and not updated_record["mail_list"]
                         ):
-                            messagebox.showerror(
+                            show_error(
                                 "Invalid Update",
                                 "The selected update would leave the record on no list.\n\n"
                                 "The update was skipped."
@@ -2128,7 +2180,7 @@ def import_new_records_from_csv():
     if exceptions_report_path:
         report_message = f"\n\nExceptions report saved:\n{exceptions_report_path}"
 
-    messagebox.showinfo(
+    show_info(
         "Import Complete",
         f"New records added: {new_count}\n"
         f"Existing records replaced: {replaced_count}\n"
@@ -2145,7 +2197,7 @@ def delete_record():
     record_id = CURRENT_RECORD_ID or edit_id_entry.get().strip()
 
     if not str(record_id).isdigit():
-        messagebox.showerror(
+        show_error(
             "Error",
             "No Record is currently loaded.\n\nPlease enter a numeric record ID."
         )
@@ -2153,7 +2205,7 @@ def delete_record():
 
     CURRENT_RECORD_ID = record_id
     
-    confirm = messagebox.askyesno(
+    confirm = ask_yes_no(
         "Confirm Delete",
         f"Are you sure you want to delete record ID {record_id}?\n\nTHIS CANNOT BE UNDONE!"
     )
@@ -2168,7 +2220,7 @@ def delete_record():
         )
 
     if cursor.rowcount == 0:
-        messagebox.showerror(
+        show_error(
             "Error",
             f"No record found with ID {record_id}."
         )
@@ -2183,7 +2235,7 @@ def delete_record():
 
         edit_id_entry.focus_set()
 
-        messagebox.showinfo(
+        show_info(
             "Deleted",
             f"Record ID {record_id} deleted."
         )
@@ -2194,7 +2246,7 @@ def load_record_for_edit():
     record_id = edit_id_entry.get().strip()
     
     if not record_id.isdigit():
-        messagebox.showerror(
+        show_error(
             "Error",
             "Invalid ID.\n\nPlease enter a numeric record ID."
         )
@@ -2212,7 +2264,7 @@ def load_record_for_edit():
         record = cursor.fetchone()
 
     if not record:
-        messagebox.showerror(
+        show_error(
             "Error",
             f"No record found with ID {record_id}."
         )
@@ -2256,7 +2308,7 @@ def update_record():
     record_id = CURRENT_RECORD_ID or edit_id_entry.get().strip()
 
     if not str(record_id).isdigit():
-        messagebox.showerror(
+        show_error(
             "Error",
             "No record is currently loaded.\n\nLoad a record before updating."
         )
@@ -2290,9 +2342,15 @@ def update_record():
         """, (*form_data, record_id))
 
     if cursor.rowcount == 0:
-        messagebox.showerror("Error", f"No record found with ID {record_id}.")
+        show_error(
+            "Error",
+            f"No record found with ID {record_id}."
+        )
     else:
-        messagebox.showinfo("Updated", f"Record ID {record_id} updated.")
+        show_info(
+            "Updated",
+            f"Record ID {record_id} updated."
+        )
         mark_unbacked_changes()
         refresh_database_status(update_timestamp=True)
         clear_form()
@@ -2375,6 +2433,7 @@ def add_mail_label_page(
 
 def export_mail_labels_5162():
     file_path = filedialog.asksaveasfilename(
+        parent=root,
         defaultextension=".docx",
         initialfile=f"Newsletter 14 per page {datetime.now().strftime('%Y-%m-%d %H%M')}.docx",
         filetypes=[("Word documents", "*.docx")]
@@ -2424,6 +2483,7 @@ def export_mail_labels_5162():
 
 def export_mail_labels_5160():
     file_path = filedialog.asksaveasfilename(
+        parent=root,
         defaultextension=".docx",
         initialfile=f"Newsletter 30 per page {datetime.now().strftime('%Y-%m-%d %H%M')}.docx",
         filetypes=[("Word documents", "*.docx")]
@@ -2477,11 +2537,164 @@ root = tk.Tk()
 root.title(f"{APP_NAME} {APP_VERSION}")
 root.configure(bg=BG_COLOR)
 
+def get_active_app_window():
+    """
+    Return the currently active window within this application.
+
+    If a custom dialog is open, message boxes should appear above that
+    dialog. Otherwise, they should appear above the main application window.
+    """
+    try:
+        focused_widget = root.focus_get()
+
+        if focused_widget is not None:
+            return focused_widget.winfo_toplevel()
+
+    except tk.TclError:
+        pass
+
+    return root
+
+
+def center_toplevel_over_parent(dialog, parent=None):
+    """
+    Center a custom Toplevel window over its parent window.
+
+    This uses the parent's current screen coordinates, so it also works
+    when the main application window has been moved to another display.
+    """
+    if parent is None:
+        parent = root
+
+    parent.update_idletasks()
+    dialog.update_idletasks()
+
+    parent_x = parent.winfo_rootx()
+    parent_y = parent.winfo_rooty()
+    parent_width = parent.winfo_width()
+    parent_height = parent.winfo_height()
+
+    dialog_width = dialog.winfo_reqwidth()
+    dialog_height = dialog.winfo_reqheight()
+
+    x_position = parent_x + int((parent_width - dialog_width) / 2)
+    y_position = parent_y + int((parent_height - dialog_height) / 2)
+
+    # The signed format is important for monitors positioned to the
+    # left of or above the primary display, where coordinates are negative.
+    dialog.geometry(f"{x_position:+d}{y_position:+d}")
+
+    dialog.deiconify()
+    dialog.lift()
+    dialog.focus_force()
+
+
+def show_error(title, message, parent=None):
+    if parent is None:
+        parent = get_active_app_window()
+
+    return messagebox.showerror(
+        title,
+        message,
+        parent=parent
+    )
+
+
+def show_warning(title, message, parent=None):
+    if parent is None:
+        parent = get_active_app_window()
+
+    return messagebox.showwarning(
+        title,
+        message,
+        parent=parent
+    )
+
+
+def show_info(title, message, parent=None):
+    if parent is None:
+        parent = get_active_app_window()
+
+    return messagebox.showinfo(
+        title,
+        message,
+        parent=parent
+    )
+
+
+def ask_yes_no(title, message, parent=None):
+    if parent is None:
+        parent = get_active_app_window()
+
+    return messagebox.askyesno(
+        title,
+        message,
+        parent=parent
+    )
+    
+
+def insert_keypad_digit(event, digit):
+    """
+    Insert a digit from the extended numeric keypad.
+
+    On Windows, keypad keys may be reported differently depending
+    on whether Num Lock is on or off. Returning "break" prevents
+    Tk from also processing the same keystroke as navigation.
+    """
+    try:
+        event.widget.insert(tk.INSERT, digit)
+        return "break"
+    except tk.TclError:
+        return None
+
+
+def enable_windows_numeric_keypad():
+    if os.name != "nt":
+        return
+
+    keypad_digit_map = {
+        # Num Lock on
+        "KP_0": "0",
+        "KP_1": "1",
+        "KP_2": "2",
+        "KP_3": "3",
+        "KP_4": "4",
+        "KP_5": "5",
+        "KP_6": "6",
+        "KP_7": "7",
+        "KP_8": "8",
+        "KP_9": "9",
+
+        # Num Lock off: Windows may report navigation-style keysyms
+        "KP_Insert": "0",
+        "KP_End": "1",
+        "KP_Down": "2",
+        "KP_Next": "3",
+        "KP_Left": "4",
+        "KP_Begin": "5",
+        "KP_Right": "6",
+        "KP_Home": "7",
+        "KP_Up": "8",
+        "KP_Prior": "9",
+    }
+
+    for widget_class in ("Entry", "TEntry", "Text"):
+        for keysym, digit in keypad_digit_map.items():
+            root.bind_class(
+                widget_class,
+                f"<KeyPress-{keysym}>",
+                lambda event, value=digit: insert_keypad_digit(event, value)
+            )
+
+
+enable_windows_numeric_keypad()
+
+
 def show_about_dialog():
     root.lift()
     root.update_idletasks()
 
-    messagebox.showinfo(
+    show_info(
         f"About {APP_NAME}",
         f"{APP_NAME}\n"
         f"Version {APP_VERSION}\n\n"
@@ -2871,10 +3084,15 @@ search_display_headers = {
     "email": "Email"
 }
 
-search_tree_style = ttk.Style()
+search_tree_style = ttk.Style(root)
 
-search_tree_style.configure(
-    "Search.Treeview",
+# The native Windows ttk theme may leave the empty portion of a
+# Treeview white even when fieldbackground has been configured.
+# The clam theme consistently honors the custom Treeview colors.
+if os.name == "nt":
+    search_tree_style.theme_use("clam")
+
+search_tree_style.configure(    "Search.Treeview",
     background=BG_COLOR,
     foreground=FG_COLOR,
     fieldbackground=BG_COLOR,
@@ -3069,7 +3287,7 @@ def search_by_last_name_inline():
     search_term = search_last_name_var.get().strip()
 
     if not search_term:
-        messagebox.showerror(
+        show_error(
             "Search Required",
             "Enter a last name or partial last name."
         )
@@ -3543,10 +3761,10 @@ def handle_close_request():
         return
 
     dialog = tk.Toplevel(root)
+    dialog.withdraw()
     dialog.title("CSV Backup Reminder")
     dialog.configure(bg=DUPLICATE_DIALOG_BG)
     dialog.transient(root)
-    dialog.grab_set()
     dialog.resizable(False, False)
 
     tk.Label(
@@ -3613,6 +3831,8 @@ def handle_close_request():
     # Clicking the dialog's red close button cancels the close request
     # and returns the user to the application.
     dialog.protocol("WM_DELETE_WINDOW", dialog.destroy)
+    center_toplevel_over_parent(dialog, root)
+    dialog.grab_set()
 
 # -------------------------
 # LOGO IN BOTTOM-RIGHT CORNER

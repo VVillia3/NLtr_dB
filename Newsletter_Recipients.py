@@ -1,3 +1,16 @@
+#   Added in version (1.0.5):
+#       Duplicate handling now supports households with three or more records that share
+#       Address 1 but have different Address 2 values.
+#       Manual Save Recipient warnings list every possible matching record instead of only
+#       the first database row returned.
+#       CSV import checks every possible matching row before deciding whether a complete
+#       match should be skipped automatically.
+#       When several CSV duplicate candidates exist, the strongest candidate is displayed
+#       for review rather than an arbitrary first row.
+#       The CSV duplicate-review window now includes Add as Separate New Record so a valid
+#       additional household member or address-line variation can be saved without replacing
+#       or altering an existing record.
+#
 #   Added in version (1.0.4):
 #       A new Notes field is:
 #           Added to the SQLite database schema.
@@ -73,7 +86,7 @@ from docx.shared import Inches, Pt
 from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
 
 APP_NAME = "Newsletter Recipients dB"
-APP_VERSION = "1.0.4"
+APP_VERSION = "1.0.5"
 
 def resource_path(filename):
     if hasattr(sys, "_MEIPASS"):
@@ -1114,7 +1127,9 @@ def save_recipient():
 
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.execute("""
-            SELECT id, first_name, last_name, mailaddress_line1, email, phone
+            SELECT id, first_name, last_name,
+                   mailaddress_line1, mailaddress_line2,
+                   email, phone
             FROM recipients
             WHERE (
                     lower(email) = lower(?)
@@ -1130,21 +1145,37 @@ def save_recipient():
                 AND last_name != ''
                 AND mailaddress_line1 != ''
                 )
+            ORDER BY id
         """, (email, phone, last, address1))
 
-        duplicate = cursor.fetchone()
+        duplicates = cursor.fetchall()
 
-        if duplicate:
-            existing_id, ex_first, ex_last, ex_address, ex_email, ex_phone = duplicate
+        if duplicates:
+            existing_record_text = []
+
+            for (
+                existing_id, ex_first, ex_last,
+                ex_address1, ex_address2,
+                ex_email, ex_phone
+            ) in duplicates:
+                address_lines = "\n".join(
+                    line
+                    for line in [ex_address1, ex_address2]
+                    if line
+                )
+
+                existing_record_text.append(
+                    f"Existing ID: {existing_id}\n"
+                    f"{ex_first} {ex_last}\n"
+                    f"{address_lines}\n"
+                    f"{ex_email}\n"
+                    f"{format_phone(ex_phone)}"
+                )
 
             proceed = ask_yes_no(
                 "Possible Duplicate",
-                f"Possible duplicate found:\n\n"
-                f"Existing ID: {existing_id}\n"
-                f"{ex_first} {ex_last}\n"
-                f"{ex_address}\n"
-                f"{ex_email}\n"
-                f"{format_phone(ex_phone)}\n\n"
+                f"Possible duplicates found:\n\n"
+                f"{'\n\n'.join(existing_record_text)}\n\n"
                 f"New record:\n"
                 f"{first} {last}\n"
                 f"{address1}\n"
@@ -1368,6 +1399,117 @@ def csv_int(value):
 
     return 0
 
+
+def csv_compare_text(value):
+    return str(value or "").strip().casefold()
+
+
+def csv_duplicate_match_score(existing_record, csv_record):
+    """
+    Rank possible duplicate candidates so the review window opens against
+    the most likely matching database record when more than one row matches.
+    """
+    score = 0
+
+    existing_email = csv_compare_text(existing_record.get("email"))
+    csv_email = csv_compare_text(csv_record.get("email"))
+
+    if csv_email and existing_email == csv_email:
+        score += 100
+
+    existing_phone = csv_compare_text(existing_record.get("phone"))
+    csv_phone = csv_compare_text(csv_record.get("phone"))
+
+    if csv_phone and existing_phone == csv_phone:
+        score += 100
+
+    if (
+        csv_compare_text(existing_record.get("last_name"))
+        == csv_compare_text(csv_record.get("last_name"))
+    ):
+        score += 20
+
+    existing_addresses = {
+        csv_compare_text(existing_record.get("mailaddress_line1")),
+        csv_compare_text(existing_record.get("mailaddress_line2"))
+    }
+
+    csv_addresses = {
+        csv_compare_text(csv_record.get("mailaddress_line1")),
+        csv_compare_text(csv_record.get("mailaddress_line2"))
+    }
+
+    existing_addresses.discard("")
+    csv_addresses.discard("")
+
+    score += 10 * len(existing_addresses & csv_addresses)
+
+    if (
+        csv_compare_text(existing_record.get("mailaddress_line1"))
+        == csv_compare_text(csv_record.get("mailaddress_line1"))
+        and csv_compare_text(existing_record.get("mailaddress_line2"))
+        == csv_compare_text(csv_record.get("mailaddress_line2"))
+    ):
+        score += 40
+
+    return score
+
+
+def database_duplicate_row_to_record(duplicate):
+    (
+        existing_id, ex_hon_title, ex_first, ex_last,
+        ex_area_code, ex_phone, ex_email, ex_address1,
+        ex_address2, ex_city, ex_state, ex_zip_code,
+        ex_email_list, ex_mail_list, ex_notes
+    ) = duplicate
+
+    existing_record = {
+        "honorific_title": ex_hon_title or "",
+        "first_name": ex_first or "",
+        "last_name": ex_last or "",
+        "area_code": ex_area_code or "",
+        "phone": ex_phone or "",
+        "email": ex_email or "",
+        "mailaddress_line1": ex_address1 or "",
+        "mailaddress_line2": ex_address2 or "",
+        "city": ex_city or "",
+        "state": ex_state or "",
+        "zip_code": ex_zip_code or "",
+        "email_list": ex_email_list or 0,
+        "mail_list": ex_mail_list or 0,
+        "notes": ex_notes or ""
+    }
+
+    return existing_id, existing_record
+
+
+def insert_csv_record(conn, csv_record):
+    conn.execute("""
+        INSERT INTO recipients (
+            honorific_title, first_name, last_name,
+            area_code, phone, email,
+            mailaddress_line1, mailaddress_line2, city, state, zip_code,
+            email_list, mail_list, notes
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        csv_record["honorific_title"],
+        csv_record["first_name"],
+        csv_record["last_name"],
+        csv_record["area_code"],
+        csv_record["phone"],
+        csv_record["email"],
+        csv_record["mailaddress_line1"],
+        csv_record["mailaddress_line2"],
+        csv_record["city"],
+        csv_record["state"],
+        csv_record["zip_code"],
+        csv_record["email_list"],
+        csv_record["mail_list"],
+        csv_record["notes"]
+    ))
+
+
 def choose_csv_fields_for_update(existing_record, csv_record):
     dialog = tk.Toplevel(root)
     dialog.withdraw()
@@ -1544,6 +1686,10 @@ def choose_csv_fields_for_update(existing_record, csv_record):
         result["action"] = "skip"
         dialog.destroy()
 
+    def add_as_new_record():
+        result["action"] = "add_new"
+        dialog.destroy()
+
     def update_selected():
         selected = [
             field_name
@@ -1632,6 +1778,22 @@ def choose_csv_fields_for_update(existing_record, csv_record):
     
     ColorButton(
         action_frame,
+        text="Add as Separate\nNew Record",
+        bg=SAVE_BG,
+        fg=SAVE_FG,
+        activebackground=SAVE_ACTIVE_BG,
+        activeforeground=SAVE_ACTIVE_FG,
+        width=22,
+        command=add_as_new_record
+    ).grid(
+        row=3,
+        column=0,
+        sticky="ew",
+        pady=(0, 10)
+    )
+
+    ColorButton(
+        action_frame,
         text="Skip CSV Duplicate",
         bg=SHOW_ALL_RECORDS_BG,
         fg=SHOW_ALL_RECORDS_FG,
@@ -1640,7 +1802,7 @@ def choose_csv_fields_for_update(existing_record, csv_record):
         width=22,
         command=skip_record
     ).grid(
-        row=3,
+        row=4,
         column=0,
         sticky="ew",
         pady=(0, 10)
@@ -1656,7 +1818,7 @@ def choose_csv_fields_for_update(existing_record, csv_record):
         width=22,
         command=cancel_import
     ).grid(
-        row=4,
+        row=5,
         column=0,
         sticky="ew"
     )
@@ -1808,7 +1970,7 @@ def import_new_records_from_csv():
     replaced_count = 0
     selected_update_count = 0
     no_list_rejected_count = 0
-    
+
     not_added_records = []
     partially_added_records = []
 
@@ -1903,37 +2065,27 @@ def import_new_records_from_csv():
                     csv_record["mailaddress_line2"]
                 ))
 
-                duplicate = cursor.fetchone()
+                duplicate_rows = cursor.fetchall()
 
-                if duplicate:
-                    (
-                        existing_id, ex_hon_title, ex_first, ex_last,
-                        ex_area_code, ex_phone, ex_email, ex_address1,
-                        ex_address2, ex_city, ex_state, ex_zip_code,
-                        ex_email_list, ex_mail_list, ex_notes
-                    ) = duplicate
+                if duplicate_rows:
+                    duplicate_candidates = [
+                        database_duplicate_row_to_record(duplicate)
+                        for duplicate in duplicate_rows
+                    ]
 
-                    existing_record = {
-                        "honorific_title": ex_hon_title or "",
-                        "first_name": ex_first or "",
-                        "last_name": ex_last or "",
-                        "area_code": ex_area_code or "",
-                        "phone": ex_phone or "",
-                        "email": ex_email or "",
-                        "mailaddress_line1": ex_address1 or "",
-                        "mailaddress_line2": ex_address2 or "",
-                        "city": ex_city or "",
-                        "state": ex_state or "",
-                        "zip_code": ex_zip_code or "",
-                        "email_list": ex_email_list or 0,
-                        "mail_list": ex_mail_list or 0,
-                        "notes": ex_notes or ""
-                    }
+                    exact_match = next(
+                        (
+                            (existing_id, existing_record)
+                            for existing_id, existing_record in duplicate_candidates
+                            if csv_record_matches_existing_record(
+                                existing_record,
+                                csv_record
+                            )
+                        ),
+                        None
+                    )
 
-                    if csv_record_matches_existing_record(
-                        existing_record,
-                        csv_record
-                    ):
+                    if exact_match:
                         skipped_count += 1
                         matching_skipped_count += 1
 
@@ -1944,11 +2096,22 @@ def import_new_records_from_csv():
 
                         continue
 
+                    existing_id, existing_record = max(
+                        duplicate_candidates,
+                        key=lambda candidate: (
+                            csv_duplicate_match_score(
+                                candidate[1],
+                                csv_record
+                            ),
+                            -candidate[0]
+                        )
+                    )
+
                     decision = choose_csv_fields_for_update(
                         existing_record,
                         csv_record
                     )
-                    
+
                     if decision["action"] == "cancel":
                         not_added_records.append({
                             "reason": "Import canceled by user while reviewing this duplicate.",
@@ -1964,6 +2127,28 @@ def import_new_records_from_csv():
                             "csv_record": csv_record.copy()
                         })
 
+                        continue
+
+                    if decision["action"] == "add_new":
+                        if not csv_record["email_list"] and not csv_record["mail_list"]:
+                            show_error(
+                                "Invalid New Record",
+                                "Adding this CSV record would create a record on no list.\n\n"
+                                "The new record was skipped."
+                            )
+
+                            skipped_count += 1
+                            no_list_rejected_count += 1
+
+                            not_added_records.append({
+                                "reason": "New record skipped because CSV record had neither Email List nor Mail List selected.",
+                                "csv_record": csv_record.copy()
+                            })
+
+                            continue
+
+                        insert_csv_record(conn, csv_record)
+                        new_count += 1
                         continue
 
                     if decision["action"] == "replace":
@@ -2131,31 +2316,7 @@ def import_new_records_from_csv():
 
                         continue
 
-                    conn.execute("""
-                        INSERT INTO recipients (
-                            honorific_title, first_name, last_name,
-                            area_code, phone, email,
-                            mailaddress_line1, mailaddress_line2, city, state, zip_code,
-                            email_list, mail_list, notes
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        csv_record["honorific_title"],
-                        csv_record["first_name"],
-                        csv_record["last_name"],
-                        csv_record["area_code"],
-                        csv_record["phone"],
-                        csv_record["email"],
-                        csv_record["mailaddress_line1"],
-                        csv_record["mailaddress_line2"],
-                        csv_record["city"],
-                        csv_record["state"],
-                        csv_record["zip_code"],
-                        csv_record["email_list"],
-                        csv_record["mail_list"],
-                        csv_record["notes"]
-                    ))
-
+                    insert_csv_record(conn, csv_record)
                     new_count += 1
 
         changes_made = (
@@ -2190,7 +2351,7 @@ def import_new_records_from_csv():
         f"Rejected for no list selection: {no_list_rejected_count}"
         f"{report_message}"
     )
-    
+
 def delete_record():
     global CURRENT_RECORD_ID
 
@@ -2728,13 +2889,6 @@ menu_bar.add_cascade(
 
 root.config(menu=menu_bar)
 
-if root.tk.call("tk", "windowingsystem") == "aqua":
-    root.createcommand("show_about_dialog", show_about_dialog)
-    root.tk.eval("""
-        proc ::tk::mac::ShowAboutPanel {} {
-            show_about_dialog
-        }
-    """)
     
 def choose_fixed_font(size=12):
     available_fonts = set(tkfont.families())

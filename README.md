@@ -22,6 +22,13 @@ The application was designed for organizations that need a straightforward way t
 * Export mailing labels for Avery 5160-compatible labels (30 per page)
 * Store the database locally on the user's computer
 
+## Download
+
+Download the latest version from the Releases page.
+
+- Windows: download the `.exe` installer
+- macOS: download the `.dmg` disk image
+
 ## Download the Windows Version
 
 Download the newest Windows ZIP file from the [Releases](../../releases/latest) page.
